@@ -216,7 +216,7 @@ export const ClearDataModal: React.FC<ClearDataModalProps> = ({ onClose }) => {
           <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-[11px] text-amber-800 flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             <p className="leading-relaxed">
-              This action permanently wipes selected records from Cloud Firestore and local storage. Once cleared, you can start inputting your company's live inventory and records.
+              This action permanently wipes selected records from Supabase PostgreSQL. Once cleared, you can start inputting your company's live inventory and records.
             </p>
           </div>
 

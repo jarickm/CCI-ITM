@@ -72,8 +72,8 @@ const MainAppContent: React.FC = () => {
     isCloudLoading,
     dismissCloudLoading,
     cloudDatabaseId,
-    loginWithGoogle,
-    firebaseUser
+    googleWorkspaceUser,
+    loginWithGoogleWorkspace
   } = useITM();
 
   // Modals state
@@ -278,38 +278,38 @@ const MainAppContent: React.FC = () => {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white text-center select-none">
         <div className="relative mb-6">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-500 via-indigo-600 to-indigo-700 flex items-center justify-center shadow-xl shadow-indigo-500/25 animate-pulse">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-emerald-500 via-teal-600 to-indigo-700 flex items-center justify-center shadow-xl shadow-emerald-500/25 animate-pulse">
             <Cloud className="w-8 h-8 text-white" />
           </div>
-          <span className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-slate-900 animate-ping" />
+          <span className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-400 rounded-full border-2 border-slate-900 animate-ping" />
         </div>
         <h2 className="text-xl font-bold tracking-tight text-white mb-1.5 flex items-center gap-2">
-          <span>Connecting to Cloud Firestore</span>
+          <span>Connecting to Supabase PostgreSQL</span>
         </h2>
-        <p className="text-xs text-indigo-300 font-mono mb-4 bg-indigo-950/70 border border-indigo-800/60 px-3 py-1 rounded-full">
+        <p className="text-xs text-emerald-300 font-mono mb-4 bg-emerald-950/70 border border-emerald-800/60 px-3 py-1 rounded-full">
           {cloudDatabaseId}
         </p>
         <p className="text-xs text-slate-400 max-w-sm mb-6 leading-relaxed">
-          Establishing real-time cloud snapshot streams. All enterprise assets, maintenance history, and 2026 KPI targets are synced directly with Google Cloud Firestore.
+          Tables automatically created and synchronized directly with Supabase PostgreSQL. All assets, maintenance history, and 2026 KPI targets are ready.
         </p>
         <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-3.5 py-1.5 rounded-lg mb-6">
           <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
-          <span>Synchronizing live database...</span>
+          <span>Synchronizing with Supabase database...</span>
         </div>
 
         <div className="flex flex-col sm:flex-row items-center gap-3">
           <button
             onClick={() => dismissCloudLoading()}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-lg shadow-indigo-600/30 transition-all active:scale-95"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-lg shadow-emerald-600/30 transition-all active:scale-95"
           >
             <span>Open Dashboard Directly</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
-          {!firebaseUser && (
+          {!googleWorkspaceUser && (
             <button
               onClick={async () => {
                 try {
-                  await loginWithGoogle();
+                  await loginWithGoogleWorkspace('jk.peralta@coolaireconsolidated.com', 'JK Peralta');
                   dismissCloudLoading();
                 } catch (e) {
                   console.error(e);
@@ -318,8 +318,8 @@ const MainAppContent: React.FC = () => {
               }}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs transition-all active:scale-95"
             >
-              <LogIn className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Sign in with Google</span>
+              <LogIn className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Sign in with Google Workspace</span>
             </button>
           )}
         </div>

@@ -1,26 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { 
-  collection, 
-  onSnapshot, 
-  doc, 
-  setDoc, 
-  deleteDoc, 
-  updateDoc,
-  getDocs,
-  getDoc 
-} from 'firebase/firestore';
-import { User } from 'firebase/auth';
-import { 
-  db, 
-  auth, 
-  handleFirestoreError, 
-  OperationType, 
-  initAuthListener, 
-  testConnection,
-  signInWithGoogle,
-  signOutUser,
-  firebaseConfig 
-} from '../firebase/config';
+  supabaseApi, 
+  DatabaseStatus, 
+  GoogleWorkspaceUser 
+} from '../api/supabaseClient';
 import { 
   Asset, 
   OnboardingRecord, 
@@ -29,17 +12,17 @@ import {
   BorrowingRecord, 
   PreventiveMaintenanceRecord, 
   LiabilityRecord, 
-  ActivityLog,
-  SystemSettings,
-  UserProfile,
-  UserRole,
-  LanguageCode,
-  DropdownOptionsConfig,
-  KPITargets2026Data,
-  AssetCustodyTransfer,
-  OrientationSessionLog,
-  NetsuiteConcernLog,
-  MONTHS_LIST
+  ActivityLog, 
+  SystemSettings, 
+  UserProfile, 
+  UserRole, 
+  LanguageCode, 
+  DropdownOptionsConfig, 
+  KPITargets2026Data, 
+  AssetCustodyTransfer, 
+  OrientationSessionLog, 
+  NetsuiteConcernLog, 
+  MONTHS_LIST 
 } from '../types/itm';
 import { 
   SEED_ASSETS, 
@@ -50,8 +33,8 @@ import {
   SEED_PREVENTIVE_MAINTENANCE, 
   SEED_LIABILITIES, 
   SEED_ACTIVITY_LOGS, 
-  INITIAL_SETTINGS,
-  DEFAULT_DROPDOWN_OPTIONS,
+  INITIAL_SETTINGS, 
+  DEFAULT_DROPDOWN_OPTIONS, 
   SEED_KPI_2026 
 } from '../data/seedData';
 import { TRANSLATIONS } from '../utils/i18n';
@@ -66,7 +49,7 @@ export interface AlertNotification {
 }
 
 interface ITMContextType {
-  // Collections
+  // Collections from Supabase PostgreSQL
   assets: Asset[];
   onboardings: OnboardingRecord[];
   offboardings: OffboardingRecord[];
@@ -137,7 +120,7 @@ interface ITMContextType {
 
   // Settings & DB Management
   updateSettings: (newSettings: Partial<SystemSettings>) => Promise<void>;
-  seedInitialDataToFirebase: () => Promise<void>;
+  seedInitialDataToFirebase: () => Promise<void>; // Backward-compatible name, writes to Supabase
   clearAllData: () => Promise<void>;
   clearAssetsOnly: () => Promise<void>;
   clearDataWithPassword: (password: string, clearScope: 'all' | 'assets' | 'requests' | 'borrowings') => Promise<{ success: boolean; message: string }>;
@@ -148,19 +131,22 @@ interface ITMContextType {
   currentUser: UserProfile;
   setCurrentUser: (user: UserProfile) => void;
   setUserRole: (role: UserRole) => void;
-  firebaseUser: User | null;
-  loginWithGoogle: () => Promise<void>;
-  logoutGoogle: () => Promise<void>;
+  googleWorkspaceUser: GoogleWorkspaceUser | null;
+  loginWithGoogleWorkspace: (email: string, name?: string, picture?: string) => Promise<void>;
+  logoutGoogleWorkspace: () => Promise<void>;
   language: LanguageCode;
   setLanguage: (lang: LanguageCode) => void;
   t: (key: string) => string;
 
-  // Cloud Database & Offline State
+  // Cloud Database State (Supabase PostgreSQL)
   isOnline: boolean;
-  isFirebaseConnected: boolean;
+  isSupabaseConnected: boolean;
+  isFirebaseConnected: boolean; // Alias for UI components
   isCloudLoading: boolean;
   dismissCloudLoading: () => void;
   cloudDatabaseId: string;
+  dbStatus: DatabaseStatus | null;
+  refreshFromSupabase: () => Promise<void>;
   alerts: AlertNotification[];
   markAlertRead: (id: string) => void;
   clearAllAlerts: () => void;
@@ -176,11 +162,10 @@ interface ITMContextType {
 
 const ITMContext = createContext<ITMContextType | undefined>(undefined);
 
-const LOCAL_STORAGE_PREFIX = 'itm_pro_';
-const CLOUD_DATABASE_ID = firebaseConfig.firestoreDatabaseId || 'ai-studio-remixitmproitass-2e9f3fdb-bad2-4ff4-bdd8-58e482d454b9';
+const SUPABASE_DB_HOST = 'aws-0-ap-northeast-1.pooler.supabase.com';
 
 export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Pure Cloud State with Instant Resilient Baseline Fallback
+  // Pure Supabase PostgreSQL State
   const [assets, setAssets] = useState<Asset[]>(SEED_ASSETS);
   const [onboardings, setOnboardings] = useState<OnboardingRecord[]>(SEED_ONBOARDINGS);
   const [offboardings, setOffboardings] = useState<OffboardingRecord[]>(SEED_OFFBOARDINGS);
@@ -193,7 +178,7 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [dropdownOptions, setDropdownOptionsState] = useState<DropdownOptionsConfig>(DEFAULT_DROPDOWN_OPTIONS);
   const [kpi2026, setKpi2026] = useState<KPITargets2026Data>(SEED_KPI_2026);
 
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [googleWorkspaceUser, setGoogleWorkspaceUser] = useState<GoogleWorkspaceUser | null>(null);
 
   const [currentUser, setCurrentUser] = useState<UserProfile>({
     name: 'JK Peralta',
@@ -205,8 +190,10 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [language, setLanguage] = useState<LanguageCode>('en');
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
-  const [isFirebaseConnected, setIsFirebaseConnected] = useState<boolean>(true);
+  const [isSupabaseConnected, setIsSupabaseConnected] = useState<boolean>(true);
   const [isCloudLoading, setIsCloudLoading] = useState<boolean>(true);
+  const [dbStatus, setDbStatus] = useState<DatabaseStatus | null>(null);
+
   const [quickSearchQuery, setQuickSearchQuery] = useState<string>('');
   const [selectedAssetForQR, setSelectedAssetForQR] = useState<Asset | null>(null);
   const [activeTab, setActiveTab] = useState<string>('dashboard');
@@ -287,228 +274,134 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAlerts(newAlerts);
   }, [assets, borrowings, settings.lowStockThresholds]);
 
-  // Firestore Realtime Cloud Connection and Stream Synchronization
+  // Load all data from Supabase PostgreSQL
+  const refreshFromSupabase = useCallback(async () => {
+    try {
+      const [
+        statusRes,
+        assetsRes,
+        onbRes,
+        offRes,
+        reqRes,
+        brwRes,
+        pmRes,
+        liaRes,
+        logsRes,
+        settingsRes,
+        dropdownsRes,
+        kpiRes
+      ] = await Promise.all([
+        supabaseApi.getStatus().catch(() => ({ success: false, provider: 'Supabase', connected: false })),
+        supabaseApi.getAssets().catch(() => []),
+        supabaseApi.getOnboardings().catch(() => []),
+        supabaseApi.getOffboardings().catch(() => []),
+        supabaseApi.getRequests().catch(() => []),
+        supabaseApi.getBorrowings().catch(() => []),
+        supabaseApi.getPreventiveMaintenance().catch(() => []),
+        supabaseApi.getLiabilities().catch(() => []),
+        supabaseApi.getActivityLogs().catch(() => []),
+        supabaseApi.getSettings().catch(() => null),
+        supabaseApi.getDropdowns().catch(() => null),
+        supabaseApi.getKPI2026().catch(() => null),
+      ]);
+
+      setDbStatus(statusRes as DatabaseStatus);
+      setIsSupabaseConnected((statusRes as DatabaseStatus).connected);
+
+      if (Array.isArray(assetsRes) && assetsRes.length > 0) {
+        setAssets(assetsRes);
+      }
+      if (Array.isArray(onbRes) && onbRes.length > 0) {
+        setOnboardings(onbRes);
+      }
+      if (Array.isArray(offRes) && offRes.length > 0) {
+        setOffboardings(offRes);
+      }
+      if (Array.isArray(reqRes) && reqRes.length > 0) {
+        setRequests(reqRes);
+      }
+      if (Array.isArray(brwRes) && brwRes.length > 0) {
+        setBorrowings(brwRes);
+      }
+      if (Array.isArray(pmRes) && pmRes.length > 0) {
+        setPreventiveMaintenance(pmRes);
+      }
+      if (Array.isArray(liaRes) && liaRes.length > 0) {
+        setLiabilities(liaRes);
+      }
+      if (Array.isArray(logsRes) && logsRes.length > 0) {
+        setActivityLogs(logsRes);
+      }
+      if (settingsRes) {
+        setSettingsState(prev => ({ ...prev, ...settingsRes }));
+      }
+      if (dropdownsRes) {
+        setDropdownOptionsState(prev => ({ ...prev, ...dropdownsRes }));
+      }
+      if (kpiRes) {
+        setKpi2026(kpiRes);
+      }
+
+      setIsCloudLoading(false);
+    } catch (err) {
+      console.warn('Supabase fetch notice:', err);
+      setIsCloudLoading(false);
+    }
+  }, []);
+
+  // Initial Load & Automatic Background Sync every 15s
   useEffect(() => {
-    let unsubs: (() => void)[] = [];
     let isMounted = true;
 
-    // Safety timeout: Never leave user stuck on loading screen longer than 2.5 seconds
-    const safetyTimeout = setTimeout(() => {
-      if (isMounted) {
-        setIsCloudLoading(false);
-      }
-    }, 2500);
+    // Safety timeout: never lock user screen
+    const timer = setTimeout(() => {
+      if (isMounted) setIsCloudLoading(false);
+    }, 2000);
 
-    const initCloudStreams = async () => {
-      try {
-        const connOk = await testConnection();
-        if (isMounted) setIsFirebaseConnected(connOk);
+    refreshFromSupabase();
 
-        // Pre-flight check: Seed initial enterprise records if Cloud Firestore is completely fresh
-        try {
-          const assetsSnap = await getDocs(collection(db, 'assets'));
-          const isExplicitlyCleared = localStorage.getItem(LOCAL_STORAGE_PREFIX + 'cleared') === 'true';
-
-          if (assetsSnap.empty && !isExplicitlyCleared) {
-            console.log('[Cloud Firestore] Bootstrapping enterprise schema and sample records directly into Cloud Firestore...');
-            await seedInitialDataToFirebase();
-          }
-        } catch (err) {
-          console.warn('Cloud database pre-flight check notice:', err);
-        }
-
-        // Authoritative Cloud Firestore Snapshot Streams
-        const assetsUnsub = onSnapshot(collection(db, 'assets'), (snapshot) => {
-          if (!isMounted) return;
-          if (!snapshot.empty) {
-            const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Asset));
-            setAssets(list);
-          } else {
-            const isExplicitlyCleared = localStorage.getItem(LOCAL_STORAGE_PREFIX + 'cleared') === 'true';
-            if (!isExplicitlyCleared) setAssets(SEED_ASSETS);
-          }
-          setIsCloudLoading(false);
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'assets');
-          if (isMounted) setIsCloudLoading(false);
-        });
-        unsubs.push(assetsUnsub);
-
-        const onbUnsub = onSnapshot(collection(db, 'onboardings'), (snapshot) => {
-          if (!isMounted) return;
-          if (!snapshot.empty) {
-            const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as OnboardingRecord));
-            setOnboardings(list);
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'onboardings');
-        });
-        unsubs.push(onbUnsub);
-
-        const offUnsub = onSnapshot(collection(db, 'offboardings'), (snapshot) => {
-          if (!isMounted) return;
-          if (!snapshot.empty) {
-            const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as OffboardingRecord));
-            setOffboardings(list);
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'offboardings');
-        });
-        unsubs.push(offUnsub);
-
-        const reqUnsub = onSnapshot(collection(db, 'requests'), (snapshot) => {
-          if (!isMounted) return;
-          if (!snapshot.empty) {
-            const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as RequestRecord));
-            setRequests(list);
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'requests');
-        });
-        unsubs.push(reqUnsub);
-
-        const brwUnsub = onSnapshot(collection(db, 'borrowings'), (snapshot) => {
-          if (!isMounted) return;
-          if (!snapshot.empty) {
-            const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as BorrowingRecord));
-            setBorrowings(list);
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'borrowings');
-        });
-        unsubs.push(brwUnsub);
-
-        const pmUnsub = onSnapshot(collection(db, 'preventive_maintenance'), (snapshot) => {
-          if (!isMounted) return;
-          if (!snapshot.empty) {
-            const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as PreventiveMaintenanceRecord));
-            setPreventiveMaintenance(list);
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'preventive_maintenance');
-        });
-        unsubs.push(pmUnsub);
-
-        const liaUnsub = onSnapshot(collection(db, 'liabilities'), (snapshot) => {
-          if (!isMounted) return;
-          if (!snapshot.empty) {
-            const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as LiabilityRecord));
-            setLiabilities(list);
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'liabilities');
-        });
-        unsubs.push(liaUnsub);
-
-        const logUnsub = onSnapshot(collection(db, 'activity_logs'), (snapshot) => {
-          if (!isMounted) return;
-          if (!snapshot.empty) {
-            const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as ActivityLog));
-            list.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
-            setActivityLogs(list);
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'activity_logs');
-        });
-        unsubs.push(logUnsub);
-
-        const dropdownUnsub = onSnapshot(doc(db, 'settings', 'dropdowns'), (snapshot) => {
-          if (!isMounted) return;
-          if (snapshot.exists()) {
-            const data = snapshot.data() as Partial<DropdownOptionsConfig>;
-            setDropdownOptionsState(prev => ({ ...DEFAULT_DROPDOWN_OPTIONS, ...prev, ...data }));
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'settings/dropdowns');
-        });
-        unsubs.push(dropdownUnsub);
-
-        const settingsUnsub = onSnapshot(doc(db, 'settings', 'global'), (snapshot) => {
-          if (!isMounted) return;
-          if (snapshot.exists()) {
-            const data = snapshot.data() as Partial<SystemSettings>;
-            setSettingsState(prev => ({ ...INITIAL_SETTINGS, ...prev, ...data }));
-            if (data.dropdownOptions) {
-              setDropdownOptionsState(prev => ({ ...DEFAULT_DROPDOWN_OPTIONS, ...prev, ...data.dropdownOptions }));
-            }
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'settings/global');
-        });
-        unsubs.push(settingsUnsub);
-
-        const kpiUnsub = onSnapshot(doc(db, 'kpi_records', '2026'), (snapshot) => {
-          if (!isMounted) return;
-          if (snapshot.exists()) {
-            const data = snapshot.data() as KPITargets2026Data;
-            setKpi2026(data);
-          }
-          setIsCloudLoading(false);
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'kpi_records/2026');
-          if (isMounted) setIsCloudLoading(false);
-        });
-        unsubs.push(kpiUnsub);
-
-      } catch (err) {
-        console.warn('Real-time listener initialization notice:', err);
-        if (isMounted) setIsCloudLoading(false);
-      }
-    };
-
-    initCloudStreams();
-
-    // Listen to Firebase Authentication State
-    const unsubscribeAuth = initAuthListener((user) => {
-      if (!isMounted) return;
-      setFirebaseUser(user);
-      if (user) {
-        setIsFirebaseConnected(true);
-        setCurrentUser(prev => ({
-          ...prev,
-          name: user.displayName || user.email?.split('@')[0] || prev.name,
-          email: user.email || prev.email,
-        }));
-      }
-    });
+    const interval = setInterval(() => {
+      if (isMounted) refreshFromSupabase();
+    }, 15000);
 
     return () => {
       isMounted = false;
-      clearTimeout(safetyTimeout);
-      unsubscribeAuth();
-      unsubs.forEach(u => u());
+      clearTimeout(timer);
+      clearInterval(interval);
     };
-  }, []);
+  }, [refreshFromSupabase]);
 
-  // Google Login and Signout handlers
-  const loginWithGoogle = async () => {
+  // Google Workspace SSO Authentication
+  const loginWithGoogleWorkspace = async (email: string, name?: string, picture?: string) => {
     try {
-      const user = await signInWithGoogle();
-      if (user) {
-        setFirebaseUser(user);
-        setIsFirebaseConnected(true);
-        setCurrentUser(prev => ({
-          ...prev,
-          name: user.displayName || user.email?.split('@')[0] || prev.name,
-          email: user.email || prev.email,
-        }));
-        await logActivity('AUTH_LOGIN', 'User', user.email || 'Google User', `Authenticated via Google SSO`);
+      const res = await supabaseApi.loginGoogleWorkspace({
+        email,
+        name: name || email.split('@')[0],
+        picture,
+        role: email.includes('peralta') || email.includes('admin') ? 'Super Admin' : 'IT Admin',
+        department: 'IT Infrastructure & Security',
+        hd: email.split('@')[1] || 'coolaireconsolidated.com',
+      });
+
+      if (res.success && res.user) {
+        setGoogleWorkspaceUser(res.user);
+        setCurrentUser({
+          name: res.user.name,
+          email: res.user.email,
+          role: res.user.role as UserRole,
+          department: res.user.department,
+          adId: res.user.adId || `COOLAIRE\\${email.split('@')[0]}`,
+        });
       }
-    } catch (error) {
-      console.error('Sign-in error:', error);
-      throw error;
+    } catch (err) {
+      console.error('Google Workspace login error:', err);
+      throw err;
     }
   };
 
-  const logoutGoogle = async () => {
-    try {
-      await signOutUser();
-      setFirebaseUser(null);
-      await logActivity('AUTH_LOGOUT', 'User', currentUser.email, `Logged out from Google SSO`);
-    } catch (error) {
-      console.error('Sign-out error:', error);
-      throw error;
-    }
+  const logoutGoogleWorkspace = async () => {
+    setGoogleWorkspaceUser(null);
+    await logActivity('GOOGLE_WORKSPACE_LOGOUT', 'User', currentUser.email, `Logged out from Google Workspace SSO`);
   };
 
   // Translation helper
@@ -532,9 +425,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActivityLogs(prev => [newLog, ...prev]);
 
     try {
-      await setDoc(doc(db, 'activity_logs', newLog.id), newLog);
+      await supabaseApi.createActivityLog(newLog);
     } catch (err) {
-      console.warn('Activity log sync notice:', err);
+      console.warn('Activity log sync error:', err);
     }
   };
 
@@ -553,9 +446,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('ASSET_CREATE', 'Asset', newAsset.assetCode, `Created asset ${newAsset.employeeOrDeviceName} (${newAsset.assetCode})`);
 
     try {
-      await setDoc(doc(db, 'assets', id), newAsset);
+      await supabaseApi.createAsset(newAsset);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `assets/${id}`);
+      console.error('Failed to create asset in Supabase:', err);
     }
     return id;
   };
@@ -567,9 +460,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('ASSET_UPDATE', 'Asset', target?.assetCode || id, `Updated asset fields: ${Object.keys(updates).join(', ')}`);
 
     try {
-      await updateDoc(doc(db, 'assets', id), { ...updates, updatedAt: now });
+      await supabaseApi.updateAsset(id, updates);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `assets/${id}`);
+      console.error('Failed to update asset in Supabase:', err);
     }
   };
 
@@ -579,13 +472,13 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('ASSET_DELETE', 'Asset', target?.assetCode || id, `Deleted asset ${target?.employeeOrDeviceName}`);
 
     try {
-      await deleteDoc(doc(db, 'assets', id));
+      await supabaseApi.deleteAsset(id);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `assets/${id}`);
+      console.error('Failed to delete asset from Supabase:', err);
     }
   };
 
-  // ASSET CUSTODY TRANSFER & TURNOVER (GUI SUPPORT FOR EMPLOYEE RESIGNATION/TRANSFER)
+  // ASSET CUSTODY TRANSFER & TURNOVER
   const transferAsset = async (transferData: AssetCustodyTransfer) => {
     const targetAsset = assets.find(a => a.id === transferData.id || a.assetCode === transferData.id);
     if (!targetAsset) return;
@@ -646,9 +539,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('ONBOARDING_CREATE', 'Onboarding', newRec.controlNumber, `Registered onboarding for ${newRec.employeeName}`);
 
     try {
-      await setDoc(doc(db, 'onboardings', id), newRec);
+      await supabaseApi.createOnboarding(newRec);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `onboardings/${id}`);
+      console.error('Failed to create onboarding in Supabase:', err);
     }
     return id;
   };
@@ -659,9 +552,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('ONBOARDING_UPDATE', 'Onboarding', id, `Updated onboarding record`);
 
     try {
-      await updateDoc(doc(db, 'onboardings', id), { ...updates, updatedAt: now });
+      await supabaseApi.updateOnboarding(id, updates);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `onboardings/${id}`);
+      console.error('Failed to update onboarding in Supabase:', err);
     }
   };
 
@@ -670,9 +563,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('ONBOARDING_DELETE', 'Onboarding', id, `Deleted onboarding record`);
 
     try {
-      await deleteDoc(doc(db, 'onboardings', id));
+      await supabaseApi.deleteOnboarding(id);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `onboardings/${id}`);
+      console.error('Failed to delete onboarding from Supabase:', err);
     }
   };
 
@@ -685,9 +578,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('OFFBOARDING_CREATE', 'Offboarding', newRec.controlNumber, `Created separation clearance for ${newRec.employeeName}`);
 
     try {
-      await setDoc(doc(db, 'offboardings', id), newRec);
+      await supabaseApi.createOffboarding(newRec);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `offboardings/${id}`);
+      console.error('Failed to create offboarding in Supabase:', err);
     }
     return id;
   };
@@ -698,9 +591,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('OFFBOARDING_UPDATE', 'Offboarding', id, `Updated offboarding clearance`);
 
     try {
-      await updateDoc(doc(db, 'offboardings', id), { ...updates, updatedAt: now });
+      await supabaseApi.updateOffboarding(id, updates);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `offboardings/${id}`);
+      console.error('Failed to update offboarding in Supabase:', err);
     }
   };
 
@@ -709,9 +602,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('OFFBOARDING_DELETE', 'Offboarding', id, `Deleted offboarding clearance`);
 
     try {
-      await deleteDoc(doc(db, 'offboardings', id));
+      await supabaseApi.deleteOffboarding(id);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `offboardings/${id}`);
+      console.error('Failed to delete offboarding from Supabase:', err);
     }
   };
 
@@ -724,9 +617,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('REQUEST_CREATE', 'Request', newRec.referenceNo, `Submitted ${newRec.requestType} ticket: ${newRec.referenceNo}`);
 
     try {
-      await setDoc(doc(db, 'requests', id), newRec);
+      await supabaseApi.createRequest(newRec);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `requests/${id}`);
+      console.error('Failed to create request in Supabase:', err);
     }
     return id;
   };
@@ -737,9 +630,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('REQUEST_UPDATE', 'Request', id, `Updated request ticket status/details`);
 
     try {
-      await updateDoc(doc(db, 'requests', id), { ...updates, updatedAt: now });
+      await supabaseApi.updateRequest(id, updates);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `requests/${id}`);
+      console.error('Failed to update request in Supabase:', err);
     }
   };
 
@@ -748,9 +641,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('REQUEST_DELETE', 'Request', id, `Deleted request ticket`);
 
     try {
-      await deleteDoc(doc(db, 'requests', id));
+      await supabaseApi.deleteRequest(id);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `requests/${id}`);
+      console.error('Failed to delete request from Supabase:', err);
     }
   };
 
@@ -763,9 +656,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('BORROW_CREATE', 'Borrowing', id, `Borrowed ${newRec.itemCategory} by ${newRec.borrowerName}`);
 
     try {
-      await setDoc(doc(db, 'borrowings', id), newRec);
+      await supabaseApi.createBorrowing(newRec);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `borrowings/${id}`);
+      console.error('Failed to create borrowing in Supabase:', err);
     }
     return id;
   };
@@ -776,9 +669,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('BORROW_UPDATE', 'Borrowing', id, `Updated equipment loan status`);
 
     try {
-      await updateDoc(doc(db, 'borrowings', id), { ...updates, updatedAt: now });
+      await supabaseApi.updateBorrowing(id, updates);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `borrowings/${id}`);
+      console.error('Failed to update borrowing in Supabase:', err);
     }
   };
 
@@ -787,9 +680,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('BORROW_DELETE', 'Borrowing', id, `Deleted equipment loan`);
 
     try {
-      await deleteDoc(doc(db, 'borrowings', id));
+      await supabaseApi.deleteBorrowing(id);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `borrowings/${id}`);
+      console.error('Failed to delete borrowing from Supabase:', err);
     }
   };
 
@@ -802,9 +695,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('PM_CREATE', 'PreventiveMaintenance', newRec.assetCode, `Recorded PM activity for ${newRec.assetCode}`);
 
     try {
-      await setDoc(doc(db, 'preventive_maintenance', id), newRec);
+      await supabaseApi.createPreventiveMaintenance(newRec);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `preventive_maintenance/${id}`);
+      console.error('Failed to create PM log in Supabase:', err);
     }
     return id;
   };
@@ -815,9 +708,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('PM_UPDATE', 'PreventiveMaintenance', id, `Updated PM record`);
 
     try {
-      await updateDoc(doc(db, 'preventive_maintenance', id), { ...updates, updatedAt: now });
+      await supabaseApi.updatePreventiveMaintenance(id, updates);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `preventive_maintenance/${id}`);
+      console.error('Failed to update PM log in Supabase:', err);
     }
   };
 
@@ -826,9 +719,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('PM_DELETE', 'PreventiveMaintenance', id, `Deleted PM log`);
 
     try {
-      await deleteDoc(doc(db, 'preventive_maintenance', id));
+      await supabaseApi.deletePreventiveMaintenance(id);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `preventive_maintenance/${id}`);
+      console.error('Failed to delete PM log from Supabase:', err);
     }
   };
 
@@ -841,9 +734,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('LIABILITY_CREATE', 'Liability', newRec.assetCode, `Issued accountability form to ${newRec.employeeName}`);
 
     try {
-      await setDoc(doc(db, 'liabilities', id), newRec);
+      await supabaseApi.createLiability(newRec);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `liabilities/${id}`);
+      console.error('Failed to create liability in Supabase:', err);
     }
     return id;
   };
@@ -854,9 +747,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('LIABILITY_UPDATE', 'Liability', id, `Updated liability custody record`);
 
     try {
-      await updateDoc(doc(db, 'liabilities', id), { ...updates, updatedAt: now });
+      await supabaseApi.updateLiability(id, updates);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `liabilities/${id}`);
+      console.error('Failed to update liability in Supabase:', err);
     }
   };
 
@@ -865,9 +758,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('LIABILITY_DELETE', 'Liability', id, `Deleted liability record`);
 
     try {
-      await deleteDoc(doc(db, 'liabilities', id));
+      await supabaseApi.deleteLiability(id);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `liabilities/${id}`);
+      console.error('Failed to delete liability from Supabase:', err);
     }
   };
 
@@ -878,23 +771,22 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('SETTINGS_UPDATE', 'Settings', 'global', `System settings updated`);
 
     try {
-      await setDoc(doc(db, 'settings', 'global'), merged);
+      await supabaseApi.saveSettings(merged);
     } catch (err) {
       console.warn('Settings sync notice:', err);
     }
   };
 
-  // DROPDOWN & CATEGORY DATABASE MUTATIONS
+  // DROPDOWN & CATEGORY TAXONOMY
   const updateDropdownOptions = async (newOptions: Partial<DropdownOptionsConfig>) => {
     const merged = { ...dropdownOptions, ...newOptions };
     setDropdownOptionsState(merged);
-    await logActivity('DROPDOWNS_UPDATE', 'Settings', 'dropdowns', `Customized dropdown category options in database`);
+    await logActivity('DROPDOWNS_UPDATE', 'Settings', 'dropdowns', `Customized dropdown category options in Supabase`);
 
     try {
-      await setDoc(doc(db, 'settings', 'dropdowns'), merged, { merge: true });
-      await setDoc(doc(db, 'settings', 'global'), { dropdownOptions: merged }, { merge: true });
+      await supabaseApi.saveDropdowns(merged);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/dropdowns');
+      console.error('Failed to update dropdowns in Supabase:', err);
     }
   };
 
@@ -903,18 +795,17 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!trimmed) return;
     const currentList = dropdownOptions[categoryKey] || [];
     if (currentList.some(item => item.toLowerCase() === trimmed.toLowerCase())) {
-      return; // Already exists
+      return;
     }
     const updatedList = [...currentList, trimmed];
     const updatedConfig = { ...dropdownOptions, [categoryKey]: updatedList };
     setDropdownOptionsState(updatedConfig);
-    await logActivity('DROPDOWN_OPTION_ADD', 'Category', categoryKey, `Added "${trimmed}" to ${categoryKey} database list`);
+    await logActivity('DROPDOWN_OPTION_ADD', 'Category', categoryKey, `Added "${trimmed}" to ${categoryKey} list`);
 
     try {
-      await setDoc(doc(db, 'settings', 'dropdowns'), updatedConfig, { merge: true });
-      await setDoc(doc(db, 'settings', 'global'), { dropdownOptions: updatedConfig }, { merge: true });
+      await supabaseApi.saveDropdowns(updatedConfig);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/dropdowns');
+      console.error('Failed to save dropdown option to Supabase:', err);
     }
   };
 
@@ -934,93 +825,47 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('DROPDOWN_OPTION_EDIT', 'Category', categoryKey, `Renamed "${oldValue}" to "${trimmedNew}" in ${categoryKey}`);
 
     try {
-      await setDoc(doc(db, 'settings', 'dropdowns'), updatedConfig, { merge: true });
-      await setDoc(doc(db, 'settings', 'global'), { dropdownOptions: updatedConfig }, { merge: true });
+      await supabaseApi.saveDropdowns(updatedConfig);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/dropdowns');
+      console.error('Failed to save renamed dropdown to Supabase:', err);
     }
 
-    // Cascade update existing records if requested
     if (updateExistingRecords) {
       if (categoryKey === 'departments') {
-        assets.forEach(a => {
-          if (a.department === oldValue) updateAsset(a.id, { department: trimmedNew });
-        });
-        onboardings.forEach(o => {
-          if (o.department === oldValue) updateOnboarding(o.id, { department: trimmedNew });
-        });
-        offboardings.forEach(o => {
-          if (o.department === oldValue) updateOffboarding(o.id, { department: trimmedNew });
-        });
-        requests.forEach(r => {
-          if (r.departmentOrBranches === oldValue) updateRequest(r.id, { departmentOrBranches: trimmedNew });
-        });
-        borrowings.forEach(b => {
-          if (b.department === oldValue) updateBorrowing(b.id, { department: trimmedNew });
-        });
-        preventiveMaintenance.forEach(p => {
-          if (p.department === oldValue) updatePreventiveMaintenance(p.id, { department: trimmedNew });
-        });
-        liabilities.forEach(l => {
-          if (l.department === oldValue) updateLiability(l.id, { department: trimmedNew });
-        });
+        assets.forEach(a => { if (a.department === oldValue) updateAsset(a.id, { department: trimmedNew }); });
+        onboardings.forEach(o => { if (o.department === oldValue) updateOnboarding(o.id, { department: trimmedNew }); });
+        offboardings.forEach(o => { if (o.department === oldValue) updateOffboarding(o.id, { department: trimmedNew }); });
+        requests.forEach(r => { if (r.departmentOrBranches === oldValue) updateRequest(r.id, { departmentOrBranches: trimmedNew }); });
+        borrowings.forEach(b => { if (b.department === oldValue) updateBorrowing(b.id, { department: trimmedNew }); });
+        preventiveMaintenance.forEach(p => { if (p.department === oldValue) updatePreventiveMaintenance(p.id, { department: trimmedNew }); });
+        liabilities.forEach(l => { if (l.department === oldValue) updateLiability(l.id, { department: trimmedNew }); });
       } else if (categoryKey === 'assetCategories') {
-        assets.forEach(a => {
-          if (a.category === oldValue) updateAsset(a.id, { category: trimmedNew as any });
-        });
-        borrowings.forEach(b => {
-          if (b.itemCategory === oldValue) updateBorrowing(b.id, { itemCategory: trimmedNew });
-        });
+        assets.forEach(a => { if (a.category === oldValue) updateAsset(a.id, { category: trimmedNew as any }); });
+        borrowings.forEach(b => { if (b.itemCategory === oldValue) updateBorrowing(b.id, { itemCategory: trimmedNew }); });
       } else if (categoryKey === 'assetStatuses') {
-        assets.forEach(a => {
-          if (a.status === oldValue) updateAsset(a.id, { status: trimmedNew as any });
-        });
+        assets.forEach(a => { if (a.status === oldValue) updateAsset(a.id, { status: trimmedNew as any }); });
       } else if (categoryKey === 'requestTypes') {
-        requests.forEach(r => {
-          if (r.requestType === oldValue) updateRequest(r.id, { requestType: trimmedNew as any });
-        });
+        requests.forEach(r => { if (r.requestType === oldValue) updateRequest(r.id, { requestType: trimmedNew as any }); });
       } else if (categoryKey === 'requestStatuses') {
-        requests.forEach(r => {
-          if (r.status === oldValue) updateRequest(r.id, { status: trimmedNew as any });
-        });
+        requests.forEach(r => { if (r.status === oldValue) updateRequest(r.id, { status: trimmedNew as any }); });
       } else if (categoryKey === 'onboardingStatuses') {
-        onboardings.forEach(o => {
-          if (o.status === oldValue) updateOnboarding(o.id, { status: trimmedNew as any });
-        });
+        onboardings.forEach(o => { if (o.status === oldValue) updateOnboarding(o.id, { status: trimmedNew as any }); });
       } else if (categoryKey === 'offboardingStatuses') {
-        offboardings.forEach(o => {
-          if (o.status === oldValue) updateOffboarding(o.id, { status: trimmedNew as any });
-        });
+        offboardings.forEach(o => { if (o.status === oldValue) updateOffboarding(o.id, { status: trimmedNew as any }); });
       } else if (categoryKey === 'borrowStatuses') {
-        borrowings.forEach(b => {
-          if (b.status === oldValue) updateBorrowing(b.id, { status: trimmedNew as any });
-        });
+        borrowings.forEach(b => { if (b.status === oldValue) updateBorrowing(b.id, { status: trimmedNew as any }); });
       } else if (categoryKey === 'pmStatuses') {
-        preventiveMaintenance.forEach(p => {
-          if (p.status === oldValue) updatePreventiveMaintenance(p.id, { status: trimmedNew as any });
-        });
+        preventiveMaintenance.forEach(p => { if (p.status === oldValue) updatePreventiveMaintenance(p.id, { status: trimmedNew as any }); });
       } else if (categoryKey === 'liabilityStatuses') {
-        liabilities.forEach(l => {
-          if (l.status === oldValue) updateLiability(l.id, { status: trimmedNew as any });
-        });
+        liabilities.forEach(l => { if (l.status === oldValue) updateLiability(l.id, { status: trimmedNew as any }); });
       } else if (categoryKey === 'unitsOfMeasure') {
-        liabilities.forEach(l => {
-          if (l.uom === oldValue) updateLiability(l.id, { uom: trimmedNew });
-        });
+        liabilities.forEach(l => { if (l.uom === oldValue) updateLiability(l.id, { uom: trimmedNew }); });
       } else if (categoryKey === 'companies') {
-        onboardings.forEach(o => {
-          if (o.company === oldValue) updateOnboarding(o.id, { company: trimmedNew });
-        });
-        offboardings.forEach(o => {
-          if (o.company === oldValue) updateOffboarding(o.id, { company: trimmedNew });
-        });
-        liabilities.forEach(l => {
-          if (l.company === oldValue) updateLiability(l.id, { company: trimmedNew });
-        });
+        onboardings.forEach(o => { if (o.company === oldValue) updateOnboarding(o.id, { company: trimmedNew }); });
+        offboardings.forEach(o => { if (o.company === oldValue) updateOffboarding(o.id, { company: trimmedNew }); });
+        liabilities.forEach(l => { if (l.company === oldValue) updateLiability(l.id, { company: trimmedNew }); });
       } else if (categoryKey === 'locations') {
-        assets.forEach(a => {
-          if (a.location === oldValue) updateAsset(a.id, { location: trimmedNew });
-        });
+        assets.forEach(a => { if (a.location === oldValue) updateAsset(a.id, { location: trimmedNew }); });
       }
     }
   };
@@ -1030,14 +875,12 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updatedList = currentList.filter(item => item !== value);
     const updatedConfig = { ...dropdownOptions, [categoryKey]: updatedList };
     setDropdownOptionsState(updatedConfig);
-
     await logActivity('DROPDOWN_OPTION_DELETE', 'Category', categoryKey, `Removed "${value}" from ${categoryKey} list`);
 
     try {
-      await setDoc(doc(db, 'settings', 'dropdowns'), updatedConfig, { merge: true });
-      await setDoc(doc(db, 'settings', 'global'), { dropdownOptions: updatedConfig }, { merge: true });
+      await supabaseApi.saveDropdowns(updatedConfig);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/dropdowns');
+      console.error('Failed to delete dropdown option in Supabase:', err);
     }
   };
 
@@ -1045,14 +888,12 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const defaultList = DEFAULT_DROPDOWN_OPTIONS[categoryKey];
     const updatedConfig = { ...dropdownOptions, [categoryKey]: defaultList };
     setDropdownOptionsState(updatedConfig);
-
     await logActivity('DROPDOWN_CATEGORY_RESET', 'Category', categoryKey, `Reset ${categoryKey} to factory defaults`);
 
     try {
-      await setDoc(doc(db, 'settings', 'dropdowns'), updatedConfig, { merge: true });
-      await setDoc(doc(db, 'settings', 'global'), { dropdownOptions: updatedConfig }, { merge: true });
+      await supabaseApi.saveDropdowns(updatedConfig);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/dropdowns');
+      console.error('Failed to reset dropdown in Supabase:', err);
     }
   };
 
@@ -1067,9 +908,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('KPI_UPDATE', 'KPI2026', 'targets', 'Updated official IT 2026 Target Measurement records');
 
     try {
-      await setDoc(doc(db, 'kpi_records', '2026'), merged, { merge: true });
+      await supabaseApi.saveKPI2026(merged);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'kpi_records/2026');
+      console.error('Failed to update KPI 2026 in Supabase:', err);
     }
   };
 
@@ -1078,55 +919,25 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logActivity('KPI_RESET', 'KPI2026', 'targets', 'Reset IT 2026 Target Measurement records to official baseline');
 
     try {
-      await setDoc(doc(db, 'kpi_records', '2026'), SEED_KPI_2026);
+      await supabaseApi.saveKPI2026(SEED_KPI_2026);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'kpi_records/2026');
+      console.error('Failed to reset KPI 2026 in Supabase:', err);
     }
   };
 
-  // 1-Click Seed Initial Data to Firebase
+  // Re-seed Initial Baseline Data to Supabase
   const seedInitialDataToFirebase = async () => {
     try {
-      for (const a of SEED_ASSETS) {
-        await setDoc(doc(db, 'assets', a.id), a);
-      }
-      for (const o of SEED_ONBOARDINGS) {
-        await setDoc(doc(db, 'onboardings', o.id), o);
-      }
-      for (const off of SEED_OFFBOARDINGS) {
-        await setDoc(doc(db, 'offboardings', off.id), off);
-      }
-      for (const req of SEED_REQUESTS) {
-        await setDoc(doc(db, 'requests', req.id), req);
-      }
-      for (const b of SEED_BORROWINGS) {
-        await setDoc(doc(db, 'borrowings', b.id), b);
-      }
-      for (const pm of SEED_PREVENTIVE_MAINTENANCE) {
-        await setDoc(doc(db, 'preventive_maintenance', pm.id), pm);
-      }
-      for (const l of SEED_LIABILITIES) {
-        await setDoc(doc(db, 'liabilities', l.id), l);
-      }
-      for (const log of SEED_ACTIVITY_LOGS) {
-        await setDoc(doc(db, 'activity_logs', log.id), log);
-      }
-      // Seed Dropdown Category Master Data
-      await setDoc(doc(db, 'settings', 'dropdowns'), DEFAULT_DROPDOWN_OPTIONS);
-      await setDoc(doc(db, 'settings', 'global'), INITIAL_SETTINGS);
-      // Seed Official Measurement of Target - IT 2026
-      await setDoc(doc(db, 'kpi_records', '2026'), SEED_KPI_2026);
-
-      localStorage.removeItem(LOCAL_STORAGE_PREFIX + 'cleared');
-      await logActivity('DATABASE_SEED', 'System', 'all', 'Seeded initial enterprise dataset, dropdown categories, and 2026 KPI targets to Firebase');
+      await supabaseApi.seedDatabase();
+      await refreshFromSupabase();
+      await logActivity('DATABASE_SEED', 'System', 'all', 'Seeded initial enterprise dataset into Supabase PostgreSQL');
     } catch (err) {
       console.error('Seeding error:', err);
     }
   };
 
-  // Clear All System Data (Wipe Cloud Firestore database & start fresh)
+  // Clear All System Data
   const clearAllData = async () => {
-    localStorage.setItem(LOCAL_STORAGE_PREFIX + 'cleared', 'true');
     setAssets([]);
     setOnboardings([]);
     setOffboardings([]);
@@ -1136,41 +947,23 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setLiabilities([]);
     setActivityLogs([]);
 
-    const collectionsToWipe = [
-      'assets',
-      'onboardings',
-      'offboardings',
-      'requests',
-      'borrowings',
-      'preventive_maintenance',
-      'liabilities',
-      'activity_logs',
-    ];
-
-    for (const col of collectionsToWipe) {
-      try {
-        const snap = await getDocs(collection(db, col));
-        await Promise.all(snap.docs.map(d => deleteDoc(doc(db, col, d.id))));
-      } catch (err) {
-        console.warn(`Error clearing Cloud Firestore collection ${col}:`, err);
-      }
+    try {
+      await supabaseApi.clearDatabase(settings.masterAdminPassword || 'ITAdmin@2026', 'all');
+      await logActivity('SYSTEM_CLEARED', 'Supabase', 'all', 'All system data and inventory records cleared from Supabase');
+    } catch (err) {
+      console.error('Failed to clear Supabase database:', err);
     }
-
-    await logActivity('SYSTEM_CLEARED', 'CloudFirestore', 'all', 'All system data and inventory records cleared from Cloud Firestore');
   };
 
   // Clear Inventory Assets Only
   const clearAssetsOnly = async () => {
     setAssets([]);
-
     try {
-      const snap = await getDocs(collection(db, 'assets'));
-      await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'assets', d.id))));
+      await supabaseApi.clearDatabase(settings.masterAdminPassword || 'ITAdmin@2026', 'assets');
+      await logActivity('ASSETS_CLEARED', 'Supabase', 'assets', 'All inventory asset records cleared from Supabase');
     } catch (err) {
-      console.warn('Error clearing Cloud Firestore assets:', err);
+      console.error('Failed to clear assets in Supabase:', err);
     }
-
-    await logActivity('ASSETS_CLEARED', 'CloudFirestore', 'assets', 'All inventory asset records cleared from Cloud Firestore');
   };
 
   // SECURE CLEAR ALL DATA WITH MASTER PASSWORD PROTECTION
@@ -1178,33 +971,13 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     password: string, 
     clearScope: 'all' | 'assets' | 'requests' | 'borrowings'
   ): Promise<{ success: boolean; message: string }> => {
-    const expectedPassword = settings.masterAdminPassword || 'ITAdmin@2026';
-    if (password !== expectedPassword) {
-      return { success: false, message: 'Invalid IT Admin Master Password. Access denied.' };
+    try {
+      const res = await supabaseApi.clearDatabase(password, clearScope);
+      await refreshFromSupabase();
+      return res;
+    } catch (err: any) {
+      return { success: false, message: err.message || 'Error executing database clear operation' };
     }
-
-    if (clearScope === 'all') {
-      await clearAllData();
-      return { success: true, message: 'All system records and inventory data wiped from Cloud Firestore.' };
-    } else if (clearScope === 'assets') {
-      await clearAssetsOnly();
-      return { success: true, message: 'All inventory asset records cleared from Cloud Firestore.' };
-    } else if (clearScope === 'requests') {
-      setRequests([]);
-      try {
-        const snap = await getDocs(collection(db, 'requests'));
-        await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'requests', d.id))));
-      } catch (e) { console.warn(e); }
-      return { success: true, message: 'All PR and incident request records cleared from Cloud Firestore.' };
-    } else if (clearScope === 'borrowings') {
-      setBorrowings([]);
-      try {
-        const snap = await getDocs(collection(db, 'borrowings'));
-        await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'borrowings', d.id))));
-      } catch (e) { console.warn(e); }
-      return { success: true, message: 'All borrowing records cleared from Cloud Firestore.' };
-    }
-    return { success: false, message: 'Unknown clear scope.' };
   };
 
   // ROLE & USER PERMISSIONS
@@ -1212,13 +985,11 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCurrentUser(prev => ({ ...prev, role }));
   };
 
-  // AUTO-CALCULATE & SYNC KPI DATA FROM LIVE SYSTEM (PMS, REPAIRS, NETSUITE)
+  // AUTO-CALCULATE & SYNC KPI DATA FROM LIVE SYSTEM
   const autoSyncKPIFromSystem = async (): Promise<KPITargets2026Data> => {
-    // 1. Calculate PMS completed from assets
     const pmsDoneFirstHalf = assets.filter(a => a.pmsCompleted && (a.pmsHalf === '1st Half' || a.pmsHalf === 'Both')).length;
     const pmsDoneSecondHalf = assets.filter(a => a.pmsCompleted && (a.pmsHalf === '2nd Half' || a.pmsHalf === 'Both')).length;
 
-    // 2. Location-based breakdown for PMS
     const locationTargets: Record<string, { planned: number; actualDoneFirstHalf: number; actualDoneSecondHalf: number }> = {
       ...(kpi2026.pms.locationTargets || {})
     };
@@ -1337,9 +1108,9 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const createBackupSnapshot = () => {
     const snapshot = {
       timestamp: new Date().toISOString(),
-      version: '1.0.0',
-      system: 'ITM Pro Enterprise Cloud',
-      database: CLOUD_DATABASE_ID,
+      version: '2.0.0',
+      system: 'ITM Pro Enterprise Supabase Cloud',
+      database: 'Supabase PostgreSQL (aws-0-ap-northeast-1.pooler.supabase.com)',
       company: settings.companyName,
       data: {
         assets,
@@ -1360,64 +1131,65 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `ITM_CloudFirestore_Backup_${new Date().toISOString().substring(0, 10)}.json`;
+    a.download = `ITM_Supabase_Backup_${new Date().toISOString().substring(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
 
     updateSettings({ lastBackupDate: new Date().toISOString() });
-    logActivity('BACKUP_EXPORT', 'CloudFirestore', 'snapshot', 'Created full JSON snapshot backup of Cloud Firestore database');
+    logActivity('BACKUP_EXPORT', 'Supabase', 'snapshot', 'Created full JSON snapshot backup of Supabase database');
   };
 
-  // Restore directly into Cloud Firestore
+  // Restore directly into Supabase
   const restoreBackupSnapshot = async (jsonData: string) => {
     try {
       const parsed = JSON.parse(jsonData);
       if (parsed.data) {
         if (parsed.data.assets && Array.isArray(parsed.data.assets)) {
           for (const a of parsed.data.assets) {
-            await setDoc(doc(db, 'assets', a.id), a);
+            await supabaseApi.createAsset(a);
           }
         }
         if (parsed.data.onboardings && Array.isArray(parsed.data.onboardings)) {
           for (const o of parsed.data.onboardings) {
-            await setDoc(doc(db, 'onboardings', o.id), o);
+            await supabaseApi.createOnboarding(o);
           }
         }
         if (parsed.data.offboardings && Array.isArray(parsed.data.offboardings)) {
           for (const off of parsed.data.offboardings) {
-            await setDoc(doc(db, 'offboardings', off.id), off);
+            await supabaseApi.createOffboarding(off);
           }
         }
         if (parsed.data.requests && Array.isArray(parsed.data.requests)) {
           for (const r of parsed.data.requests) {
-            await setDoc(doc(db, 'requests', r.id), r);
+            await supabaseApi.createRequest(r);
           }
         }
         if (parsed.data.borrowings && Array.isArray(parsed.data.borrowings)) {
           for (const b of parsed.data.borrowings) {
-            await setDoc(doc(db, 'borrowings', b.id), b);
+            await supabaseApi.createBorrowing(b);
           }
         }
         if (parsed.data.preventiveMaintenance && Array.isArray(parsed.data.preventiveMaintenance)) {
           for (const p of parsed.data.preventiveMaintenance) {
-            await setDoc(doc(db, 'preventive_maintenance', p.id), p);
+            await supabaseApi.createPreventiveMaintenance(p);
           }
         }
         if (parsed.data.liabilities && Array.isArray(parsed.data.liabilities)) {
           for (const l of parsed.data.liabilities) {
-            await setDoc(doc(db, 'liabilities', l.id), l);
+            await supabaseApi.createLiability(l);
           }
         }
         if (parsed.data.dropdownOptions) {
-          await setDoc(doc(db, 'settings', 'dropdowns'), parsed.data.dropdownOptions, { merge: true });
+          await supabaseApi.saveDropdowns(parsed.data.dropdownOptions);
         }
         if (parsed.data.settings) {
-          await setDoc(doc(db, 'settings', 'global'), parsed.data.settings, { merge: true });
+          await supabaseApi.saveSettings(parsed.data.settings);
         }
         if (parsed.data.kpi2026) {
-          await setDoc(doc(db, 'kpi_records', '2026'), parsed.data.kpi2026, { merge: true });
+          await supabaseApi.saveKPI2026(parsed.data.kpi2026);
         }
-        await logActivity('BACKUP_RESTORE', 'CloudFirestore', 'snapshot', 'Restored ITM database directly into Cloud Firestore');
+        await refreshFromSupabase();
+        await logActivity('BACKUP_RESTORE', 'Supabase', 'snapshot', 'Restored ITM database directly into Supabase PostgreSQL');
       }
     } catch (err) {
       console.error('Failed to parse backup JSON:', err);
@@ -1493,17 +1265,20 @@ export const ITMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentUser,
         setCurrentUser,
         setUserRole,
-        firebaseUser,
-        loginWithGoogle,
-        logoutGoogle,
+        googleWorkspaceUser,
+        loginWithGoogleWorkspace,
+        logoutGoogleWorkspace,
         language,
         setLanguage,
         t,
         isOnline,
-        isFirebaseConnected,
+        isSupabaseConnected,
+        isFirebaseConnected: isSupabaseConnected,
         isCloudLoading,
         dismissCloudLoading,
-        cloudDatabaseId: CLOUD_DATABASE_ID,
+        cloudDatabaseId: SUPABASE_DB_HOST,
+        dbStatus,
+        refreshFromSupabase,
         alerts,
         markAlertRead,
         clearAllAlerts,
