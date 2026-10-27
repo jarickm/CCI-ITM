@@ -1,0 +1,572 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState } from 'react';
+import { Cloud, RefreshCw, LogIn, ArrowRight, ShieldCheck } from 'lucide-react';
+import { ITMProvider, useITM } from './context/ITMContext';
+import { Navbar } from './components/Navbar';
+import { Sidebar } from './components/Sidebar';
+import { ScannerModal } from './components/ScannerModal';
+import { QRPrintModal } from './components/QRPrintModal';
+import { AssetModal } from './components/AssetModal';
+import { OnboardingModal } from './components/OnboardingModal';
+import { OffboardingModal } from './components/OffboardingModal';
+import { RequestModal } from './components/RequestModal';
+import { BorrowModal } from './components/BorrowModal';
+import { MaintenanceModal } from './components/MaintenanceModal';
+import { LiabilityModal } from './components/LiabilityModal';
+import { ClearDataModal } from './components/ClearDataModal';
+import { AssetTransferModal } from './components/AssetTransferModal';
+import { ITCompanionAI } from './components/ITCompanionAI';
+
+// Views
+import { DashboardView } from './views/DashboardView';
+import { InventoryView } from './views/InventoryView';
+import { DefectiveItemsView } from './views/DefectiveItemsView';
+import { OnboardingView } from './views/OnboardingView';
+import { OffboardingView } from './views/OffboardingView';
+import { RequestsView } from './views/RequestsView';
+import { PROnlyView } from './views/PROnlyView';
+import { BorrowingView } from './views/BorrowingView';
+import { MaintenanceView } from './views/MaintenanceView';
+import { LiabilitiesView } from './views/LiabilitiesView';
+import { QRStudioView } from './views/QRStudioView';
+import { ActivityLogsView } from './views/ActivityLogsView';
+import { SettingsView } from './views/SettingsView';
+import { KPITargets2026View } from './views/KPITargets2026View';
+
+// Models
+import { 
+  Asset, 
+  OnboardingRecord, 
+  OffboardingRecord, 
+  RequestRecord, 
+  BorrowingRecord, 
+  PreventiveMaintenanceRecord, 
+  LiabilityRecord, 
+  RequestType 
+} from './types/itm';
+
+const MainAppContent: React.FC = () => {
+  const { 
+    activeTab, 
+    assets,
+    selectedAssetForQR, 
+    setSelectedAssetForQR,
+    addAsset,
+    updateAsset,
+    addOnboarding,
+    updateOnboarding,
+    addOffboarding,
+    updateOffboarding,
+    addRequest,
+    updateRequest,
+    addBorrowing,
+    updateBorrowing,
+    addPreventiveMaintenance,
+    updatePreventiveMaintenance,
+    addLiability,
+    updateLiability,
+    isCloudLoading,
+    dismissCloudLoading,
+    cloudDatabaseId,
+    loginWithGoogle,
+    firebaseUser
+  } = useITM();
+
+  // Modals state
+  const [showScanner, setShowScanner] = useState(false);
+  const [batchPrintAssets, setBatchPrintAssets] = useState<Asset[]>([]);
+
+  // Asset Modal
+  const [showAssetModal, setShowAssetModal] = useState(false);
+  const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
+
+  // Onboarding Modal
+  const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [editingOnboarding, setEditingOnboarding] = useState<OnboardingRecord | null>(null);
+
+  // Offboarding Modal
+  const [showOffboardingModal, setShowOffboardingModal] = useState(false);
+  const [editingOffboarding, setEditingOffboarding] = useState<OffboardingRecord | null>(null);
+
+  // Request Modal
+  const [showRequestModal, setShowRequestModal] = useState(false);
+  const [editingRequest, setEditingRequest] = useState<RequestRecord | null>(null);
+  const [defaultRequestType, setDefaultRequestType] = useState<RequestType>('PR');
+
+  // Borrow Modal
+  const [showBorrowModal, setShowBorrowModal] = useState(false);
+  const [editingBorrow, setEditingBorrow] = useState<BorrowingRecord | null>(null);
+
+  // PM Modal
+  const [showPMModal, setShowPMModal] = useState(false);
+  const [editingPM, setEditingPM] = useState<PreventiveMaintenanceRecord | null>(null);
+
+  // Liability Modal
+  const [showLiabilityModal, setShowLiabilityModal] = useState(false);
+  const [editingLiability, setEditingLiability] = useState<LiabilityRecord | null>(null);
+
+  // Clear Data Modal (Password protected)
+  const [showClearDataModal, setShowClearDataModal] = useState(false);
+
+  // Device Custody Transfer Modal
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [transferTargetAsset, setTransferTargetAsset] = useState<Asset | null>(null);
+  const [transferFromEmployee, setTransferFromEmployee] = useState<string | undefined>(undefined);
+
+  const handleOpenTransfer = (assetOrEmployee?: Asset | string) => {
+    if (typeof assetOrEmployee === 'string') {
+      const foundAsset = assets.find(a => 
+        a.employeeOrDeviceName.toLowerCase().includes(assetOrEmployee.toLowerCase())
+      );
+      setTransferTargetAsset(foundAsset || null);
+      setTransferFromEmployee(assetOrEmployee);
+    } else if (assetOrEmployee) {
+      setTransferTargetAsset(assetOrEmployee);
+      setTransferFromEmployee(assetOrEmployee.employeeOrDeviceName);
+    } else {
+      setTransferTargetAsset(null);
+      setTransferFromEmployee(undefined);
+    }
+    setShowTransferModal(true);
+  };
+
+  // Asset handlers
+  const handleOpenNewAsset = () => {
+    setEditingAsset(null);
+    setShowAssetModal(true);
+  };
+
+  const handleEditAsset = (asset: Asset) => {
+    setEditingAsset(asset);
+    setShowAssetModal(true);
+  };
+
+  const handleSaveAsset = async (data: Omit<Asset, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (editingAsset) {
+      await updateAsset(editingAsset.id, data);
+    } else {
+      await addAsset(data);
+    }
+  };
+
+  // Onboarding handlers
+  const handleOpenNewOnboarding = () => {
+    setEditingOnboarding(null);
+    setShowOnboardingModal(true);
+  };
+
+  const handleEditOnboarding = (rec: OnboardingRecord) => {
+    setEditingOnboarding(rec);
+    setShowOnboardingModal(true);
+  };
+
+  const handleSaveOnboarding = async (data: Omit<OnboardingRecord, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (editingOnboarding) {
+      await updateOnboarding(editingOnboarding.id, data);
+    } else {
+      await addOnboarding(data);
+    }
+  };
+
+  // Offboarding handlers
+  const handleOpenNewOffboarding = () => {
+    setEditingOffboarding(null);
+    setShowOffboardingModal(true);
+  };
+
+  const handleEditOffboarding = (rec: OffboardingRecord) => {
+    setEditingOffboarding(rec);
+    setShowOffboardingModal(true);
+  };
+
+  const handleSaveOffboarding = async (data: Omit<OffboardingRecord, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (editingOffboarding) {
+      await updateOffboarding(editingOffboarding.id, data);
+    } else {
+      await addOffboarding(data);
+    }
+  };
+
+  // Request handlers
+  const handleOpenNewRequest = (type: RequestType = 'PR') => {
+    setDefaultRequestType(type);
+    setEditingRequest(null);
+    setShowRequestModal(true);
+  };
+
+  const handleEditRequest = (rec: RequestRecord) => {
+    setEditingRequest(rec);
+    setDefaultRequestType(rec.requestType);
+    setShowRequestModal(true);
+  };
+
+  const handleSaveRequest = async (data: Omit<RequestRecord, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (editingRequest) {
+      await updateRequest(editingRequest.id, data);
+    } else {
+      await addRequest(data);
+    }
+  };
+
+  // Borrow handlers
+  const handleOpenNewBorrow = () => {
+    setEditingBorrow(null);
+    setShowBorrowModal(true);
+  };
+
+  const handleEditBorrow = (rec: BorrowingRecord) => {
+    setEditingBorrow(rec);
+    setShowBorrowModal(true);
+  };
+
+  const handleSaveBorrow = async (data: Omit<BorrowingRecord, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (editingBorrow) {
+      await updateBorrowing(editingBorrow.id, data);
+    } else {
+      await addBorrowing(data);
+    }
+  };
+
+  // PM handlers
+  const handleOpenNewPM = () => {
+    setEditingPM(null);
+    setShowPMModal(true);
+  };
+
+  const handleEditPM = (rec: PreventiveMaintenanceRecord) => {
+    setEditingPM(rec);
+    setShowPMModal(true);
+  };
+
+  const handleSavePM = async (data: Omit<PreventiveMaintenanceRecord, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (editingPM) {
+      await updatePreventiveMaintenance(editingPM.id, data);
+    } else {
+      await addPreventiveMaintenance(data);
+    }
+  };
+
+  // Liability handlers
+  const handleOpenNewLiability = () => {
+    setEditingLiability(null);
+    setShowLiabilityModal(true);
+  };
+
+  const handleEditLiability = (rec: LiabilityRecord) => {
+    setEditingLiability(rec);
+    setShowLiabilityModal(true);
+  };
+
+  const handleSaveLiability = async (data: Omit<LiabilityRecord, 'id' | 'createdAt' | 'updatedAt'>) => {
+    if (editingLiability) {
+      await updateLiability(editingLiability.id, data);
+    } else {
+      await addLiability(data);
+    }
+  };
+
+  // Batch QR Print
+  const handlePrintBatchQR = (assetsList: Asset[]) => {
+    setBatchPrintAssets(assetsList);
+  };
+
+  if (isCloudLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white text-center select-none">
+        <div className="relative mb-6">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-500 via-indigo-600 to-indigo-700 flex items-center justify-center shadow-xl shadow-indigo-500/25 animate-pulse">
+            <Cloud className="w-8 h-8 text-white" />
+          </div>
+          <span className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-slate-900 animate-ping" />
+        </div>
+        <h2 className="text-xl font-bold tracking-tight text-white mb-1.5 flex items-center gap-2">
+          <span>Connecting to Cloud Firestore</span>
+        </h2>
+        <p className="text-xs text-indigo-300 font-mono mb-4 bg-indigo-950/70 border border-indigo-800/60 px-3 py-1 rounded-full">
+          {cloudDatabaseId}
+        </p>
+        <p className="text-xs text-slate-400 max-w-sm mb-6 leading-relaxed">
+          Establishing real-time cloud snapshot streams. All enterprise assets, maintenance history, and 2026 KPI targets are synced directly with Google Cloud Firestore.
+        </p>
+        <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-3.5 py-1.5 rounded-lg mb-6">
+          <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+          <span>Synchronizing live database...</span>
+        </div>
+
+        <div className="flex flex-col sm:flex-row items-center gap-3">
+          <button
+            onClick={() => dismissCloudLoading()}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-lg shadow-indigo-600/30 transition-all active:scale-95"
+          >
+            <span>Open Dashboard Directly</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+          {!firebaseUser && (
+            <button
+              onClick={async () => {
+                try {
+                  await loginWithGoogle();
+                  dismissCloudLoading();
+                } catch (e) {
+                  console.error(e);
+                  dismissCloudLoading();
+                }
+              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs transition-all active:scale-95"
+            >
+              <LogIn className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Sign in with Google</span>
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-indigo-600 selection:text-white">
+      {/* Top Navbar */}
+      <Navbar 
+        onOpenScanner={() => setShowScanner(true)} 
+        onOpenClearModal={() => setShowClearDataModal(true)} 
+      />
+
+      {/* Main Body */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar */}
+        <Sidebar />
+
+        {/* Viewport content */}
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6 bg-slate-100/60">
+          {activeTab === 'dashboard' && (
+            <DashboardView
+              onOpenNewAsset={handleOpenNewAsset}
+              onOpenScanner={() => setShowScanner(true)}
+              onOpenNewRequest={() => handleOpenNewRequest('PR')}
+              onOpenNewBorrow={handleOpenNewBorrow}
+            />
+          )}
+
+          {activeTab === 'kpi_targets' && (
+            <KPITargets2026View />
+          )}
+
+          {activeTab === 'inventory' && (
+            <InventoryView
+              onOpenNewAsset={handleOpenNewAsset}
+              onEditAsset={handleEditAsset}
+              onPrintBatchQR={handlePrintBatchQR}
+              onOpenTransfer={handleOpenTransfer}
+              onOpenClearPasswordModal={() => setShowClearDataModal(true)}
+            />
+          )}
+
+          {activeTab === 'defective' && (
+            <DefectiveItemsView
+              onEditAsset={handleEditAsset}
+            />
+          )}
+
+          {activeTab === 'onboarding' && (
+            <OnboardingView
+              onOpenNewOnboarding={handleOpenNewOnboarding}
+              onEditOnboarding={handleEditOnboarding}
+            />
+          )}
+
+          {activeTab === 'offboarding' && (
+            <OffboardingView
+              onOpenNewOffboarding={handleOpenNewOffboarding}
+              onEditOffboarding={handleEditOffboarding}
+              onOpenTransferDevice={handleOpenTransfer}
+            />
+          )}
+
+          {activeTab === 'requests' && (
+            <RequestsView
+              onOpenNewRequest={handleOpenNewRequest}
+              onEditRequest={handleEditRequest}
+            />
+          )}
+
+          {activeTab === 'pr_only' && (
+            <PROnlyView
+              onOpenNewPR={() => handleOpenNewRequest('PR')}
+              onEditRequest={handleEditRequest}
+            />
+          )}
+
+          {activeTab === 'borrowing' && (
+            <BorrowingView
+              onOpenNewBorrow={handleOpenNewBorrow}
+              onEditBorrow={handleEditBorrow}
+            />
+          )}
+
+          {activeTab === 'maintenance' && (
+            <MaintenanceView
+              onOpenNewPM={handleOpenNewPM}
+              onEditPM={handleEditPM}
+            />
+          )}
+
+          {activeTab === 'liabilities' && (
+            <LiabilitiesView
+              onOpenNewLiability={handleOpenNewLiability}
+              onEditLiability={handleEditLiability}
+            />
+          )}
+
+          {activeTab === 'qr_studio' && (
+            <QRStudioView />
+          )}
+
+          {activeTab === 'activity_logs' && (
+            <ActivityLogsView />
+          )}
+
+          {activeTab === 'categories' && (
+            <SettingsView initialTab="dropdowns" />
+          )}
+
+          {activeTab === 'settings' && (
+            <SettingsView initialTab="general" />
+          )}
+        </main>
+      </div>
+
+      {/* Global Modals */}
+      {showScanner && (
+        <ScannerModal
+          onClose={() => setShowScanner(false)}
+          onSelectAsset={(asset) => {
+            handleEditAsset(asset);
+          }}
+        />
+      )}
+
+      {/* Single / Batch QR Print Modal */}
+      {(selectedAssetForQR || batchPrintAssets.length > 0) && (
+        <QRPrintModal
+          asset={selectedAssetForQR}
+          batchAssets={batchPrintAssets}
+          onClose={() => {
+            setSelectedAssetForQR(null);
+            setBatchPrintAssets([]);
+          }}
+        />
+      )}
+
+      {showAssetModal && (
+        <AssetModal
+          asset={editingAsset}
+          onClose={() => {
+            setShowAssetModal(false);
+            setEditingAsset(null);
+          }}
+          onSave={handleSaveAsset}
+        />
+      )}
+
+      {showOnboardingModal && (
+        <OnboardingModal
+          record={editingOnboarding}
+          onClose={() => {
+            setShowOnboardingModal(false);
+            setEditingOnboarding(null);
+          }}
+          onSave={handleSaveOnboarding}
+        />
+      )}
+
+      {showOffboardingModal && (
+        <OffboardingModal
+          record={editingOffboarding}
+          onClose={() => {
+            setShowOffboardingModal(false);
+            setEditingOffboarding(null);
+          }}
+          onSave={handleSaveOffboarding}
+        />
+      )}
+
+      {showRequestModal && (
+        <RequestModal
+          record={editingRequest}
+          defaultType={defaultRequestType}
+          onClose={() => {
+            setShowRequestModal(false);
+            setEditingRequest(null);
+          }}
+          onSave={handleSaveRequest}
+        />
+      )}
+
+      {showBorrowModal && (
+        <BorrowModal
+          record={editingBorrow}
+          onClose={() => {
+            setShowBorrowModal(false);
+            setEditingBorrow(null);
+          }}
+          onSave={handleSaveBorrow}
+        />
+      )}
+
+      {showPMModal && (
+        <MaintenanceModal
+          record={editingPM}
+          onClose={() => {
+            setShowPMModal(false);
+            setEditingPM(null);
+          }}
+          onSave={handleSavePM}
+        />
+      )}
+
+      {showLiabilityModal && (
+        <LiabilityModal
+          record={editingLiability}
+          onClose={() => {
+            setShowLiabilityModal(false);
+            setEditingLiability(null);
+          }}
+          onSave={handleSaveLiability}
+        />
+      )}
+
+      {/* Master Password Protected Clear Data Modal */}
+      {showClearDataModal && (
+        <ClearDataModal onClose={() => setShowClearDataModal(false)} />
+      )}
+
+      {/* Device Custody Transfer & Handover Slip Modal */}
+      {showTransferModal && (
+        <AssetTransferModal
+          initialAsset={transferTargetAsset || undefined}
+          initialFromEmployee={transferFromEmployee}
+          onClose={() => {
+            setShowTransferModal(false);
+            setTransferTargetAsset(null);
+            setTransferFromEmployee(undefined);
+          }}
+        />
+      )}
+
+      {/* Google Workspace & IT AI Companion */}
+      <ITCompanionAI />
+    </div>
+  );
+};
+
+export default function App() {
+  return (
+    <ITMProvider>
+      <MainAppContent />
+    </ITMProvider>
+  );
+}

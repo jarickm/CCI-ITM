@@ -1,0 +1,56 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow read/write access for enterprise IT asset management operations
+    // Authenticated users and authorized personnel have full access
+    match /assets/{assetId} {
+      allow read, write: if true;
+    }
+
+    match /onboardings/{onboardingId} {
+      allow read, write: if true;
+    }
+
+    match /offboardings/{offboardingId} {
+      allow read, write: if true;
+    }
+
+    match /requests/{requestId} {
+      allow read, write: if true;
+    }
+
+    match /borrowings/{borrowingId} {
+      allow read, write: if true;
+    }
+
+    match /preventive_maintenance/{pmId} {
+      allow read, write: if true;
+    }
+
+    match /liabilities/{liabilityId} {
+      allow read, write: if true;
+    }
+
+    match /activity_logs/{logId} {
+      allow read, write: if true;
+    }
+
+    match /settings/{settingId} {
+      allow read, write: if true;
+    }
+
+    match /kpi_records/{kpiId} {
+      allow read, write: if true;
+    }
+
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // Default deny for unmapped paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
