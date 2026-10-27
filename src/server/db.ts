@@ -1,14 +1,6 @@
 import pg from 'pg';
 import dotenv from 'dotenv';
 import { 
-  SEED_ASSETS, 
-  SEED_ONBOARDINGS, 
-  SEED_OFFBOARDINGS, 
-  SEED_REQUESTS, 
-  SEED_BORROWINGS, 
-  SEED_PREVENTIVE_MAINTENANCE, 
-  SEED_LIABILITIES, 
-  SEED_ACTIVITY_LOGS, 
   INITIAL_SETTINGS, 
   DEFAULT_DROPDOWN_OPTIONS, 
   SEED_KPI_2026 
@@ -252,16 +244,12 @@ export async function initDatabase(): Promise<{ success: boolean; message: strin
       );
     `);
 
-    // Check if initial seeding is needed
+    // Initialize master configuration taxonomy and default admin user if not present
+    await initMasterTaxonomyAndAdmin(client);
+
     const assetCount = await client.query('SELECT COUNT(*) FROM assets');
     const count = parseInt(assetCount.rows[0].count, 10);
-
-    if (count === 0) {
-      console.log('[Supabase DB] Database is clean. Auto-seeding enterprise datasets into Supabase PostgreSQL...');
-      await seedBaselineData(client);
-    } else {
-      console.log(`[Supabase DB] Database schema is ready. Found ${count} assets in Supabase.`);
-    }
+    console.log(`[Supabase DB] Database schema is ready. Found ${count} assets in Supabase.`);
 
     return { success: true, message: 'Supabase PostgreSQL database initialized successfully' };
   } catch (error) {
@@ -273,159 +261,44 @@ export async function initDatabase(): Promise<{ success: boolean; message: strin
 }
 
 /**
- * Seeds baseline records into Supabase PostgreSQL
+ * Initializes baseline taxonomy (dropdowns, system settings, KPI structure, default admin)
+ * with zero mock records.
  */
-export async function seedBaselineData(client: pg.PoolClient) {
-  // 1. Assets
-  for (const a of SEED_ASSETS) {
-    await client.query(`
-      INSERT INTO assets (
-        id, employee_or_device_name, category, specification_or_sn, asset_code,
-        status, department, purchase_date, warranty_expiry, location,
-        is_defective, defective_details, notes, custody_history,
-        pms_completed, pms_date, pms_half, pms_technician, pms_remarks, raw_data, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW(), NOW())
-      ON CONFLICT (id) DO NOTHING;
-    `, [
-      a.id, a.employeeOrDeviceName, a.category, a.specificationOrSN, a.assetCode,
-      a.status, a.department, a.purchaseDate, a.warrantyExpiry || null, a.location || null,
-      a.isDefective || false, a.defectiveDetails || null, a.notes || null, JSON.stringify(a.custodyHistory || []),
-      a.pmsCompleted || false, a.pmsDate || null, a.pmsHalf || null, a.pmsTechnician || null, a.pmsRemarks || null,
-      JSON.stringify(a)
-    ]);
-  }
-
-  // 2. Onboardings
-  for (const o of SEED_ONBOARDINGS) {
-    const raw = o as any;
-    await client.query(`
-      INSERT INTO onboardings (
-        id, employee_name, department, position, start_date, company,
-        control_number, status, date_of_onboarding, device_issued, serial_number, remarks, raw_data
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-      ON CONFLICT (id) DO NOTHING;
-    `, [
-      o.id, o.employeeName, o.department, o.position, o.startDate, o.company,
-      o.controlNumber, o.status, o.dateOfOnboarding, raw.deviceIssued || null, raw.serialNumber || null, o.notes || null,
-      JSON.stringify(o)
-    ]);
-  }
-
-  // 3. Offboardings
-  for (const off of SEED_OFFBOARDINGS) {
-    const raw = off as any;
-    await client.query(`
-      INSERT INTO offboardings (
-        id, employee_name, department, position, separation_date, company,
-        control_number, status, returned_devices, it_clearance_by, remarks, raw_data
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-      ON CONFLICT (id) DO NOTHING;
-    `, [
-      off.id, off.employeeName, off.department, off.position, off.separationDate, off.company,
-      off.controlNumber, off.status, JSON.stringify(raw.returnedDevices || off.clearedAssets || []), raw.itClearanceBy || null, off.notes || null,
-      JSON.stringify(off)
-    ]);
-  }
-
-  // 4. Requests
-  for (const req of SEED_REQUESTS) {
-    await client.query(`
-      INSERT INTO requests (
-        id, date_reported, request_type, reference_no, employee_or_requester_name,
-        department_or_branches, actions_taken_or_remarks, date_created, date_resolved,
-        days, major_or_minor, status, raw_data
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-      ON CONFLICT (id) DO NOTHING;
-    `, [
-      req.id, req.dateReported, req.requestType, req.referenceNo, req.employeeOrRequesterName,
-      req.departmentOrBranches, req.actionsTakenOrRemarks, req.dateCreated, req.dateResolved || null,
-      req.days || 0, req.majorOrMinor, req.status,
-      JSON.stringify(req)
-    ]);
-  }
-
-  // 5. Borrowings
-  for (const b of SEED_BORROWINGS) {
-    const raw = b as any;
-    await client.query(`
-      INSERT INTO borrowings (
-        id, borrower_name, department, item_category, item_name_or_code,
-        borrow_date, return_date, status, purpose, remarks, raw_data
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      ON CONFLICT (id) DO NOTHING;
-    `, [
-      b.id, b.borrowerName, b.department, b.itemCategory, raw.itemNameOrCode || b.assetCode || null,
-      b.borrowDate, b.returnDate, b.status, raw.purpose || null, b.remarks || null,
-      JSON.stringify(b)
-    ]);
-  }
-
-  // 6. Preventive Maintenance
-  for (const pm of SEED_PREVENTIVE_MAINTENANCE) {
-    await client.query(`
-      INSERT INTO preventive_maintenance (
-        id, description, date, date_purchase, asset_code, activity_work_done,
-        performed_by, status, recommendation, department, raw_data
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      ON CONFLICT (id) DO NOTHING;
-    `, [
-      pm.id, pm.description, pm.date, pm.datePurchase, pm.assetCode, pm.activityWorkDone,
-      pm.performedBy, pm.status, pm.recommendation, pm.department,
-      JSON.stringify(pm)
-    ]);
-  }
-
-  // 7. Liabilities
-  for (const l of SEED_LIABILITIES) {
-    await client.query(`
-      INSERT INTO liabilities (
-        id, qty, uom, item_description, date_issued, employee_name,
-        department, asset_code, company, status, remarks, raw_data
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-      ON CONFLICT (id) DO NOTHING;
-    `, [
-      l.id, l.qty, l.uom, l.itemDescription, l.dateIssued, l.employeeName,
-      l.department, l.assetCode, l.company, l.status || null, l.remarks || null,
-      JSON.stringify(l)
-    ]);
-  }
-
-  // 8. Activity Logs
-  for (const log of SEED_ACTIVITY_LOGS) {
-    await client.query(`
-      INSERT INTO activity_logs (id, timestamp, actor, action, target_entity, target_id, details)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      ON CONFLICT (id) DO NOTHING;
-    `, [log.id, log.timestamp, log.actor, log.action, log.targetEntity, log.targetId || null, log.details]);
-  }
-
-  // 9. System Settings
+export async function initMasterTaxonomyAndAdmin(client: pg.PoolClient) {
+  // 1. System Settings
   await client.query(`
     INSERT INTO system_settings (id, data, updated_at)
     VALUES ('global', $1, NOW())
-    ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = NOW();
+    ON CONFLICT (id) DO NOTHING;
   `, [JSON.stringify(INITIAL_SETTINGS)]);
 
-  // 10. Dropdown Options Taxonomy
+  // 2. Dropdown Options Taxonomy
   await client.query(`
     INSERT INTO dropdown_options (id, data, updated_at)
     VALUES ('categories', $1, NOW())
-    ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = NOW();
+    ON CONFLICT (id) DO NOTHING;
   `, [JSON.stringify(DEFAULT_DROPDOWN_OPTIONS)]);
 
-  // 11. KPI Records
+  // 3. KPI Records Structure
   await client.query(`
     INSERT INTO kpi_records (id, data, updated_at)
     VALUES ('2026', $1, NOW())
-    ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = NOW();
+    ON CONFLICT (id) DO NOTHING;
   `, [JSON.stringify(SEED_KPI_2026)]);
 
-  // 12. Default Super Admin User (Google Workspace)
+  // 4. Default Super Admin User (Google Workspace)
   await client.query(`
     INSERT INTO users (id, email, name, role, department, google_workspace_domain)
     VALUES ('usr-jk-peralta', 'jk.peralta@coolaireconsolidated.com', 'JK Peralta', 'Super Admin', 'IT Infrastructure & Security', 'coolaireconsolidated.com')
     ON CONFLICT (id) DO NOTHING;
   `);
 
-  console.log('[Supabase DB] Seeding completed successfully.');
+  console.log('[Supabase DB] Master taxonomy and system configurations verified.');
+}
+
+/**
+ * Backward compatibility alias for seeding endpoint
+ */
+export async function seedBaselineData(client: pg.PoolClient) {
+  await initMasterTaxonomyAndAdmin(client);
 }

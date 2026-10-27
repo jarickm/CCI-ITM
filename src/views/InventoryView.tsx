@@ -339,7 +339,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               {filteredAssets.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="p-8 text-center text-slate-400 text-xs">
-                    No asset records match the search and filter criteria.
+                    {assets.length === 0 ? (
+                      <div className="py-8 flex flex-col items-center justify-center text-center">
+                        <div className="p-3 bg-indigo-50 text-indigo-600 rounded-full mb-3">
+                          <Plus className="w-6 h-6" />
+                        </div>
+                        <h4 className="text-sm font-bold text-slate-800">No assets in database yet</h4>
+                        <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                          Your live Supabase database is connected and ready. Click below to register your first IT asset or scan QR codes.
+                        </p>
+                        <button
+                          onClick={onOpenNewAsset}
+                          className="mt-4 px-3.5 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition shadow-xs flex items-center gap-1.5"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Add First Asset</span>
+                        </button>
+                      </div>
+                    ) : (
+                      'No asset records match the search and filter criteria.'
+                    )}
                   </td>
                 </tr>
               ) : (
